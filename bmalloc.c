@@ -1,5 +1,7 @@
+#include <sys/mman.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <string.h>
 #include "bmalloc.h" 
 
 bm_option bm_mode = BestFit ;
@@ -8,11 +10,23 @@ bm_header bm_list_head = {0, 0, 0x0 } ;
 void * sibling (void * h)
 {
 	// TODO
+	bm_header* header = (bm_header*)h; // casting
+	size_t block_size = 1 << header->size;
+	// get the size of block
+	return ((char*)header) + sizeof(bm_header) + block_size;
+	// 현재 블록의 헤더와 다음 블록의 헤더 건너뛰기
+	// 헤더 주소에서 의심되는 형제 블록의 헤더 주소 반환
 }
 
 int fitting (size_t s) 
 {
 	// TODO
+	int size_field = 0;
+	while((1 << size_field) < s){
+		size_field++;
+	}
+	// 2의 거듭제곱 만큼 size_field 증가
+	return size_field;
 }
 
 void * bmalloc (size_t s)
@@ -70,17 +84,53 @@ void * bmalloc (size_t s)
 void bfree (void * p) 
 {
 	// TODO 
+	bm_header* header = (bm_header*)((char*)p - sizeof(bm_header));
+    header->used = 0;
+
+    // Coalesce blocks if possible
+    bm_header* itr = &bm_list_head;
+    while (itr->next != NULL){
+        if (!itr->next->used && itr->next->next != NULL && !itr->next->next->used
+			&& itr->next->size == itr->next->next->size){
+            itr->next = itr->next->next;
+            itr->size++;
+        }
+        else{
+            itr = itr->next;
+        }
+    }
+
+    // Unmap the entire page if no blocks are used
+    if (bm_list_head.next == NULL){
+        munmap(&bm_list_head, 4096);
+    }
 }
 
 void * brealloc (void * p, size_t s) 
 {
 	// TODO
-	return 0x0 ; // erase this 
+	// Allocate a new block with the requested size
+    void* new_block = bmalloc(s);
+    if (new_block == NULL){
+        return NULL;
+    }
+
+    // Copy the data from the old block to the new block
+    size_t block_size = 1 << fitting(s);
+    bm_header* old_header = (bm_header*)((char*)p - sizeof(bm_header));
+    size_t copy_size = (block_size < old_header->size) ? block_size : old_header->size;
+    memcpy(new_block, p, copy_size);
+
+    // Free the old block
+    bfree(p);
+
+    return new_block;
 }
 
 void bmconfig (bm_option opt) 
 {
 	// TODO
+	bm_mode = opt;
 }
 
 
@@ -103,5 +153,23 @@ bmprint ()
 	printf("=================================================\n") ;
 
 	//TODO: print out the stat's.
-}
+	size_t total_memory = 0;
+	size_t used_memory = 0;
+	size_t available_memory = 0;
+	size_t internal_fragmentation = 0;
 
+	for(itr = bm_list_head.next; itr != NULL; itr = itr->next){
+		total_memory += 1 << itr->size;
+		if(itr->used){
+			used_memory += 1 << itr->size;
+		}
+		else{
+			available_memory += 1 << itr->size;
+			internal_fragmentation += (1 << itr->size) - sizeof(bm_header);
+		}
+	}
+	printf("Total Memory: %lu bytes\n", total_memory);
+	printf("Used Memory: %lu bytes\n", used_memory);
+	printf("Available Memory: %lu bytes\n", available_memory);
+	printf("Internal Fragmentation: %lu bytes\n", internal_fragmentation);
+}
