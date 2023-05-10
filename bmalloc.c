@@ -1,8 +1,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <string.h>
 #include "bmalloc.h" 
-
+#include <stdlib.h>
 
 bm_option bm_mode = BestFit ;
 bm_header bm_list_head = {0, 0, 0x0 } ;
@@ -10,119 +11,133 @@ bm_header bm_list_head = {0, 0, 0x0 } ;
 void * sibling (void * h)
 {
 	// TODO
-	return ((bm_header_ptr) h)->next;
+	bm_header* header = (bm_header*)h; // casting
+	size_t block_size = 1 << header->size;
+	// get the size of block
+	return ((char*)header) + sizeof(bm_header) + block_size;
+	// 현재 블록의 헤더와 다음 블록의 헤더 건너뛰기
+	// 헤더 주소에서 의심되는 형제 블록의 헤더 주소 반환
 }
 
 int fitting (size_t s) 
 {
-    int ret = -1; // If no space is found, return -1.
-    bm_header_ptr itr = bm_list_head.next;
-
-    while (itr != NULL)
-    {
-        if (!itr->used && itr->size >= s)
-        {
-            if (bm_mode == BestFit)
-            {
-                if (ret == -1 || itr->size < ((bm_header_ptr)ret)->size)
-                    ret = (int)itr;
-            }
-            else if (bm_mode == FirstFit)
-            {
-                ret = (int)itr;
-                break;
-            }
-        }
-        itr = itr->next;
-    }
-
-    return ret;
+	// TODO
+	int size_field = 0;
+	while((1 << size_field) < s){
+		size_field++;
+	}
+	// 2의 거듭제곱 만큼 size_field 증가
+	return size_field;
 }
 
-void * bmalloc (size_t s) 
+void * bmalloc (size_t s)
 {
-bm_header_ptr new_block = NULL;
-    void* ret = NULL;
-
-    // Find a free block with size greater than or equal to s.
-    int free_block = fitting(s);
-
-    // If no block is found, allocate a new block using mmap().
-    if (free_block == -1)
-    {
-        size_t alloc_size = sizeof(bm_header) + s;
-        void* ptr = mmap(NULL, alloc_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-        if (ptr == MAP_FAILED)
-            return NULL;
-
-        new_block = (bm_header_ptr)ptr;
-        new_block->used = 1;
-        new_block->size = s;
-        new_block->next = NULL;
-
-        // Add the new block to the end of the block list.
-        bm_header_ptr itr = &bm_list_head;
-        while (itr->next != NULL)
-            itr = itr->next;
-        itr->next = new_block;
-
-        ret = (void*)(new_block + 1);
+	int size_field = fitting(s);
+    
+    if(bm_list_head.used==0 && bm_list_head.size==0 && bm_list_head.next==0x0){
+        bm_list_head.size=(unsigned int)12;
+        bm_list_head.next=(bm_header*)malloc(4096);
     }
-    else
-    {
-        // If a free block is found, use it.
-        bm_header_ptr block = (bm_header_ptr)free_block;
-        block->used = 1;
+	// get the size of s
+    bm_header *itr = &bm_list_head;
+	// linked list 순회용 포인터
+    bm_header *selected_block = NULL;
+	// 적합한 메모리 블록을 가리키기 위한 포인터
 
-        // If the size of the block is greater than s plus the size of header,
-        // split the block into two blocks.
-        if (block->size > s + sizeof(bm_header))
-        {
-            bm_header_ptr new_block = (bm_header_ptr)((void*)block + sizeof(bm_header) + s);
+    if (bm_mode == BestFit){ // BestFit일 때
+        // Find the smallest block that is larger than the required size
+        while (itr->next != NULL){
+            printf("%d, %d\n", itr->size, size_field);
+            if (itr->size >= size_field){
+				// size가 주어진 s보다 크거나 같을 때
+                if (selected_block == NULL || itr->size < selected_block->size){
+                    selected_block = itr->next;
+                }
+            }
+            itr = itr->next;
+        }
+    }
+    else if (bm_mode == FirstFit){// FirstFit일 때
+        // Find the first block that is large enough
+        while (itr->next != NULL){
+            if (itr->next->size >= size_field){
+                selected_block = itr->next;
+                break;
+            }
+            itr = itr->next;
+        }
+    }
+
+    if (selected_block != NULL){
+        // Split the block if necessary
+        if (selected_block->size > size_field){
+            size_t block_size = 1 << size_field;
+            bm_header *new_block = (bm_header *)((char *)selected_block + sizeof(bm_header) + block_size);
             new_block->used = 0;
-            new_block->size = block->size - s - sizeof(bm_header);
-            new_block->next = block->next;
-
-            block->size = s;
-            block->next = new_block;
+            new_block->size = selected_block->size - size_field - 1;
+            new_block->next = selected_block->next;
+            selected_block->next = new_block;
+            selected_block->size = size_field;
         }
 
-        ret = (void*)(block + 1);
+        selected_block->used = 1; // Mark the block as used
+        return ((char *)selected_block) + sizeof(bm_header);
     }
 
-    return ret;
+    // No suitable block found, return NULL
+	return NULL;
 }
 
 void bfree (void * p) 
 {
-    if (p == NULL) return;
+	// TODO 
+	bm_header* header = (bm_header*)((char*)p - sizeof(bm_header));
+    header->used = 0;
 
-    // Free the allocated buffer starting at pointer p.
-    bm_header_ptr hdr = (bm_header_ptr) p - 1;
-    hdr->used = 0;
-
-    // Coalesce consecutive free buffers into a single buffer.
-    bm_header_ptr itr = &bm_list_head;
-    while (itr->next != NULL) {
-        bm_header_ptr next = itr->next;
-        if (!next->used && !hdr->used && ((char *) hdr) + sizeof(bm_header) + hdr->size == (char *) next) {
-            hdr->size += sizeof(bm_header) + next->size;
-            hdr->next = next->next;
-        } else {
+    // Coalesce blocks if possible
+    bm_header* itr = &bm_list_head;
+    while (itr->next != NULL){
+        if (!itr->next->used && itr->next->next != NULL && !itr->next->next->used
+			&& itr->next->size == itr->next->next->size){
+            itr->next = itr->next->next;
+            itr->size++;
+        }
+        else{
             itr = itr->next;
         }
+    }
+
+    // Unmap the entire page if no blocks are used
+    if (bm_list_head.next == NULL){
+        munmap(&bm_list_head, 4096);
     }
 }
 
 void * brealloc (void * p, size_t s) 
 {
 	// TODO
-	return 0x0 ; // erase this 
+	// Allocate a new block with the requested size
+    void* new_block = bmalloc(s);
+    if (new_block == NULL){
+        return NULL;
+    }
+
+    // Copy the data from the old block to the new block
+    size_t block_size = 1 << fitting(s);
+    bm_header* old_header = (bm_header*)((char*)p - sizeof(bm_header));
+    size_t copy_size = (block_size < old_header->size) ? block_size : old_header->size;
+    memcpy(new_block, p, copy_size);
+
+    // Free the old block
+    bfree(p);
+
+    return new_block;
 }
 
 void bmconfig (bm_option opt) 
 {
 	// TODO
+	bm_mode = opt;
 }
 
 
@@ -145,4 +160,23 @@ bmprint ()
 	printf("=================================================\n") ;
 
 	//TODO: print out the stat's.
+	size_t total_memory = 0;
+	size_t used_memory = 0;
+	size_t available_memory = 0;
+	size_t internal_fragmentation = 0;
+
+	for(itr = bm_list_head.next; itr != NULL; itr = itr->next){
+		total_memory += 1 << itr->size;
+		if(itr->used){
+			used_memory += 1 << itr->size;
+		}
+		else{
+			available_memory += 1 << itr->size;
+			internal_fragmentation += (1 << itr->size) - sizeof(bm_header);
+		}
+	}
+	printf("Total Memory: %lu bytes\n", total_memory);
+	printf("Used Memory: %lu bytes\n", used_memory);
+	printf("Available Memory: %lu bytes\n", available_memory);
+	printf("Internal Fragmentation: %lu bytes\n", internal_fragmentation);
 }
